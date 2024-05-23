@@ -41,7 +41,7 @@ class SellingMixin(TradingMixin):
             Account,
         )
 
-        self.line_item_types: list = [Account.AccountType.OPERATING_REVENUE]
+        self.line_item_types: list = [Account.AccountType.OPERATING_REVENUE, Account.AccountType.NET_INCOME]
 
         self.account_type_map: dict = {
             "ClientInvoice": Account.AccountType.RECEIVABLE,

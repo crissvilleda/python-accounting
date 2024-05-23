@@ -14,18 +14,13 @@ strenum = "^0.4.15"
 toml = "^0.10.2"
 mysqlclient = "^2.2.4"
 psycopg2 = "^2.9.9"
+pydantic = "^2.7.1"
 
 [tool.poetry.group.test.dependencies]
 pytest = "^7.4.3"
 
 [tool.poetry.group.dev.dependencies]
-sphinx-autoapi = "^3.0.0"
-sphinx-rtd-theme = "^2.0.0"
-sphinx = "^7.2.6"
-myst-parser = "^2.0.0"
-pylint = "^3.1.0"
-tox = "^4.13.0"
-dill = "^0.3.8"
+ipykernel = "^6.29.4"
 
 [build-system]
 requires = ["poetry-core"]

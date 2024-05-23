@@ -22,6 +22,7 @@ from sqlalchemy import (
     func,
     UniqueConstraint,
     inspect,
+    and_,
 )
 from sqlalchemy.types import DECIMAL
 from python_accounting.mixins import IsolatingMixin
@@ -100,7 +101,8 @@ class Transaction(IsolatingMixin, Recyclable):
     """(Set): The Line Items models associated with the Transaction."""
     ledgers: Mapped[List["Ledger"]] = relationship(
         back_populates="transaction",
-        primaryjoin="Transaction.id==Ledger.transaction_id",
+        # primaryjoin="Transaction.id==Ledger.transaction_id",
+        primaryjoin="and_(Transaction.id==Ledger.transaction_id, Ledger.deleted_at==None)"
     )
     """(list): The Ledger models associated with the Transaction."""
 

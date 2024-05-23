@@ -13,7 +13,7 @@ from decimal import Decimal
 from datetime import datetime
 from strenum import StrEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship, aliased
-from sqlalchemy import String, ForeignKey, Enum, func, inspect, select, or_, exc
+from sqlalchemy import String, ForeignKey, Enum, func, inspect, select, or_, exc, Integer, Boolean, event
 from python_accounting.models.recyclable import Recyclable
 from python_accounting.models.reporting_period import ReportingPeriod
 from python_accounting.mixins import IsolatingMixin
@@ -22,6 +22,7 @@ from python_accounting.exceptions import (
     InvalidCategoryAccountTypeError,
     InvalidAccountTypeError,
     HangingTransactionsError,
+    InvalidAccountCodeError,
 )
 from python_accounting.utils.dates import get_dates
 
@@ -48,41 +49,79 @@ class Account(IsolatingMixin, Recyclable):
 
     __mapper_args__ = {"polymorphic_identity": "Account"}
 
-    id: Mapped[int] = mapped_column(ForeignKey("recyclable.id"), primary_key=True)
+    id: Mapped[int] = mapped_column(
+        ForeignKey("recyclable.id"), primary_key=True)
     """(int): The primary key of the Account database record."""
     name: Mapped[str] = mapped_column(String(255))
     """(str): The label of the Account."""
     description: Mapped[str] = mapped_column(String(1000), nullable=True)
     """(`str`, optional): A narration of the purpose of the Account."""
-    account_code: Mapped[int] = mapped_column()
+    account_code: Mapped[str] = mapped_column()
     """(int): A serially generated code based on the type of the Account."""
     account_type: Mapped[StrEnum] = mapped_column(Enum(AccountType))
     """(AccountType): The type of the Account."""
     currency_id: Mapped[int] = mapped_column(ForeignKey("currency.id"))
     """(int): The id of the Currency model associated with the Account."""
-    category_id: Mapped[int] = mapped_column(ForeignKey("category.id"), nullable=True)
+    category_id: Mapped[int] = mapped_column(
+        ForeignKey("category.id"), nullable=True)
     """(`int`, optional): The id of the Category model to which the Account belongs."""
-
+    parent_id: Mapped[int] = mapped_column(
+        ForeignKey("account.id"), nullable=True)
+    """(`int`, optional): The id of the parent model to which the Account belongs."""
+    level: Mapped[int] = mapped_column(Integer, nullable=True)
+    """(`int`, optional): The level of the Account in the Account hierarchy."""
+    readonly: Mapped[bool] = mapped_column(Boolean, default=False)
     # relationships
     currency: Mapped["Currency"] = relationship(foreign_keys=[currency_id])
     """(Currency): The Currency associated with the Account."""
     category: Mapped["Category"] = relationship(foreign_keys=[category_id])
     """(`Category`, optional): The Category to which the Account belongs."""
+    parent: Mapped["Account"] = relationship(foreign_keys=[parent_id])
+    """(`Account`, optional): The Account to which the Account belongs."""
 
-    def _get_account_code(self, session) -> int:
+    def _get_account_code(self, session) -> str:
+
+        if self.account_code:
+            return str(self.account_code).zfill(2)
+
+        if not self.parent_id:
+            return None
+
+        parent_code = (
+            session.query(Account.account_code)
+            .filter(Account.id == self.parent_id)
+            .scalar()
+        )
+
         current_count = (
             session.query(Account)
             .filter(Account.entity_id == self.entity_id)
-            .filter(Account.account_type == self.account_type)
+            .filter(Account.parent_id == self.parent_id)
             .with_entities(func.count())  # pylint: disable=not-callable
             .scalar()
         )
 
-        return (
-            int(config.accounts["types"][self.account_type.name]["account_code"])
-            + current_count
-            + getattr(self, "session_index", 1)
+        next_count = current_count + getattr(self, 'session_index', 1)
+
+        if self.level == 1:
+            next_count = str(next_count).ljust(3, "0")
+        if self.level > 1:
+            next_count = str(next_count).zfill(2)
+
+        return f"{parent_code}.{next_count}"
+
+    def _get_level(self, session) -> int:
+
+        if not self.parent_id:
+            return 0
+
+        parent_code = (
+            session.query(Account.level)
+            .filter(Account.id == self.parent_id)
+            .scalar()
         )
+
+        return parent_code + 1
 
     def __repr__(self) -> str:
         return f"{self.account_type} {self.name} <{self.account_code}>"
@@ -113,7 +152,8 @@ class Account(IsolatingMixin, Recyclable):
 
         query = (
             session.query(
-                func.sum(Ledger.amount).label("amount")  # pylint: disable=not-callable
+                func.sum(Ledger.amount).label(
+                    "amount")  # pylint: disable=not-callable
             )
             .filter(Ledger.currency_id == self.currency_id)
             .filter(Ledger.transaction_date >= start_date)
@@ -122,9 +162,11 @@ class Account(IsolatingMixin, Recyclable):
             .filter(Ledger.entity_id == self.entity_id)
         )
         return (
-            query.filter(Ledger.entry_type == Balance.BalanceType.DEBIT).scalar() or 0
+            query.filter(Ledger.entry_type ==
+                         Balance.BalanceType.DEBIT).scalar() or 0
         ) - (
-            query.filter(Ledger.entry_type == Balance.BalanceType.CREDIT).scalar() or 0
+            query.filter(Ledger.entry_type ==
+                         Balance.BalanceType.CREDIT).scalar() or 0
         )
 
     @staticmethod
@@ -157,8 +199,10 @@ class Account(IsolatingMixin, Recyclable):
                 - closing (Decimal): The sum of opening closing of Accounts in the section.
                 - categories (dict): The Accounts belonging to the section separated by Category.
         """
-        balances = {"opening": 0, "movement": 0, "closing": 0, "categories": {}}
-        start_date, end_date, period_start, _ = get_dates(session, start_date, end_date)
+        balances = {"opening": 0, "movement": 0,
+                    "closing": 0, "categories": {}}
+        start_date, end_date, period_start, _ = get_dates(
+            session, start_date, end_date)
 
         for account in session.scalars(
             select(Account).filter(Account.account_type.in_(account_types))
@@ -182,7 +226,8 @@ class Account(IsolatingMixin, Recyclable):
                     ].keys()  # pylint: disable=consider-iterating-dictionary
                 ):
                     balances["categories"][category_name]["total"] += account.closing
-                    balances["categories"][category_name]["accounts"].append(account)
+                    balances["categories"][category_name]["accounts"].append(
+                        account)
                 else:
                     balances["categories"].update(
                         {
@@ -223,7 +268,8 @@ class Account(IsolatingMixin, Recyclable):
         )
         query = (
             session.query(
-                func.sum(Balance.amount).label("amount")  # pylint: disable=not-callable
+                func.sum(Balance.amount).label(
+                    "amount")  # pylint: disable=not-callable
             )
             .filter(Balance.currency_id == self.currency_id)
             .filter(Balance.reporting_period_id == period_id)
@@ -231,10 +277,12 @@ class Account(IsolatingMixin, Recyclable):
             .filter(Balance.entity_id == self.entity_id)
         )
         return (
-            query.filter(Balance.balance_type == Balance.BalanceType.DEBIT).scalar()
+            query.filter(Balance.balance_type ==
+                         Balance.BalanceType.DEBIT).scalar()
             or 0
         ) - (
-            query.filter(Balance.balance_type == Balance.BalanceType.CREDIT).scalar()
+            query.filter(Balance.balance_type ==
+                         Balance.BalanceType.CREDIT).scalar()
             or 0
         )
 
@@ -312,7 +360,8 @@ class Account(IsolatingMixin, Recyclable):
             raise InvalidAccountTypeError(
                 "Only Receivable and Payable Accounts can have a statement/schedule."
             )
-        start_date, end_date, _, period_id = get_dates(session, start_date, end_date)
+        start_date, end_date, _, period_id = get_dates(
+            session, start_date, end_date)
 
         statement = (
             {
@@ -439,11 +488,19 @@ class Account(IsolatingMixin, Recyclable):
         )
 
         self.name = self.name.title()
-        if (
-            self.account_code is None
-            or len(inspect(self).attrs.account_type.history.deleted) > 0
-        ):
-            self.account_code = self._get_account_code(session)
+
+        if not self.parent_id and not self.account_code:
+            raise InvalidAccountCodeError(account_name=self.name)
+
+        self.level = self._get_level(session)
+        self.account_code = self._get_account_code(session)
+
+        if self.parent_id:
+            parent = session.get(Account, self.parent_id)
+            if self.account_type != parent.account_type:
+                raise InvalidCategoryAccountTypeError(
+                    self.account_type.value, parent.account_type.value
+                )
 
         if self.category_id:
             category = session.get(Category, self.category_id)
@@ -471,7 +528,8 @@ class Account(IsolatingMixin, Recyclable):
         )
 
         if (
-            session.query(func.count(Ledger.id))  # pylint: disable=not-callable
+            session.query(func.count(Ledger.id)
+                          )  # pylint: disable=not-callable
             .filter(Ledger.entity_id == self.entity_id)
             .filter(
                 or_(

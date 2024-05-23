@@ -13,11 +13,12 @@ that are relevant to accounting.
 from datetime import datetime
 
 from sqlalchemy.orm.session import Session
-from sqlalchemy import event, orm, and_, update
+from sqlalchemy import event, orm, and_, update, inspect
 
 from python_accounting.models import Entity, Recyclable, Transaction, Account, Ledger
 from python_accounting.mixins import IsolatingMixin
 from python_accounting.exceptions import MissingEntityError
+from sqlalchemy.exc import IntegrityError
 
 
 def _filter_options(execute_state, option) -> bool:
@@ -122,3 +123,13 @@ class EventListenersMixin:
         for model in list(self.new) + list(self.dirty):
             if hasattr(model, "validate"):
                 model.validate(self)
+
+    @event.listens_for(Account, "before_update")
+    def _set_object_index(mapper, connection, target) -> None:
+        if target.readonly:
+            raise IntegrityError(
+                'Cannot update readonly record', params=None, orig=None)
+    
+    @event.listens_for(Entity, "load", restore_load_context=True)
+    def _on_load(target, context) -> None:
+        context.session.entity = target

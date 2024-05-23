@@ -22,6 +22,7 @@ from python_accounting.utils.dates import get_dates
 
 
 class Category(IsolatingMixin, Recyclable):
+    
     """Represents a grouping of Accounts of the same type."""
 
     __mapper_args__ = {"polymorphic_identity": "Category"}
